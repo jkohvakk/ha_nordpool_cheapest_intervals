@@ -1,0 +1,12 @@
+# Copy relevant section to /config/pyscript/config.yaml on Home Assistant.
+# The app is enabled only when listed under pyscript.apps.
+
+pyscript:
+  apps:
+    shelly_cheap_hours:
+      # Nordpool sensor entity (Developer Tools -> States)
+      nordpool_sensor: sensor.nordpool_kwh_fi_eur_3_10_022
+      # Shelly (or any) switch to control
+      shelly_switch: switch.shelly_outdoor_plug
+      # Decimal hours; each 0.25 = one 15-minute interval (1.75 = 7 intervals)
+      cheap_hours: 3.25

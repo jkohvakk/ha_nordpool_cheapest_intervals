@@ -1,0 +1,19 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Secrets and local HA connection (never commit)
+**/pyscript.conf
+secrets.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
