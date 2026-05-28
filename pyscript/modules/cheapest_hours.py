@@ -108,49 +108,21 @@ def today_quarter_slots(raw_today: Sequence[dict[str, Any]] | None) -> list[Pric
     return expand_slots_to_15min(parse_raw_slots(raw_today))
 
 
-def _slot_value(slot: PriceSlot) -> float:
-    return slot.value
-
-
-def _slot_interval_key(slot: PriceSlot) -> IntervalKey:
-    return interval_start_key(slot.start)
-
-
-def _sort_by_value(slots: list[PriceSlot]) -> list[PriceSlot]:
-    """Sort by price without ``sorted(..., key=lambda)`` (pyscript breaks lambdas)."""
-    result = list(slots)
-    for i in range(1, len(result)):
-        current = result[i]
-        current_val = _slot_value(current)
-        j = i - 1
-        while j >= 0 and _slot_value(result[j]) > current_val:
-            result[j + 1] = result[j]
-            j -= 1
-        result[j + 1] = current
-    return result
-
-
-def _sort_by_start(slots: list[PriceSlot]) -> list[PriceSlot]:
-    """Sort by interval start time (pyscript-safe)."""
-    result = list(slots)
-    for i in range(1, len(result)):
-        current = result[i]
-        current_key = _slot_interval_key(current)
-        j = i - 1
-        while j >= 0 and _slot_interval_key(result[j]) > current_key:
-            result[j + 1] = result[j]
-            j -= 1
-        result[j + 1] = current
-    return result
-
-
 def cheapest_interval_slots(slots: Sequence[PriceSlot], n: int) -> list[PriceSlot]:
-    """Return the ``n`` cheapest 15-minute ``PriceSlot`` rows, sorted by start time."""
+    """Return the ``n`` cheapest 15-minute ``PriceSlot`` rows, sorted by start time.
+
+    Uses builtin ``sorted`` with pre-built tuple keys instead of ``key=lambda``;
+    pyscript wraps lambdas as async functions, which makes ``sorted(..., key=...)``
+    compare coroutines and fail. Tuple comparison needs no key function.
+    """
     if n <= 0 or not slots:
         return []
-    ranked = _sort_by_value(list(slots))
-    chosen = ranked[:n]
-    return _sort_by_start(chosen)
+    by_value = sorted([(s.value, i, s) for i, s in enumerate(slots)])
+    chosen = [item[2] for item in by_value[:n]]
+    by_start = sorted(
+        [(interval_start_key(s.start), i, s) for i, s in enumerate(chosen)]
+    )
+    return [item[2] for item in by_start]
 
 
 def cheapest_interval_keys(
