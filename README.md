@@ -14,6 +14,7 @@ ha_nordpool_cheapest_intervals/
 │   ├── modules/cheapest_intervals.py        # pure logic (unit-tested locally)
 │   ├── apps/shelly_cheap_intervals/       # water heating (triggers + services)
 │   ├── apps/shelly_car_charging/          # car charging (triggers + services)
+│   ├── apps/shelly_floor_heating/         # floor heating (weather-driven hours)
 │   └── config.yaml.example                # copy to configuration.yaml on HA
 ├── scripts/deploy.sh                      # rsync to Home Assistant
 ├── tests/                                 # pytest (no HA required)
@@ -81,6 +82,11 @@ pyscript:
       night_end: 7
       boost_timer: timer.car_charging_boost
       boost_duration: "06:00:00"
+
+    shelly_floor_heating:
+      nordpool_sensor: sensor.nordpool_new
+      shelly_switch: switch.shelly_floor_heating
+      forecast_sensor: sensor.daily_forecast_avg_c
 ```
 
 #### Water heating (`shelly_cheap_intervals`)
@@ -106,6 +112,65 @@ Switch on when **any** of: 7 cheapest hours, night window 22:00–07:00, or acti
 | `night_end` | `7` | Night window end hour (exclusive) |
 | `boost_timer` | `timer.car_charging_boost` | Optional timer for manual charging boost |
 | `boost_duration` | `"06:00:00"` | Default boost length |
+
+#### Floor heating (`shelly_floor_heating`)
+
+Heated hours are derived from today's **average forecast temperature**:
+
+| Avg temp | Heated hours |
+|----------|--------------|
+| ≤ −20 °C | 24 h (always on) |
+| −10 °C | 18 h |
+| 0 °C | 12 h |
+| +10 °C | 6 h |
+| ≥ +20 °C | 0 h (always off) |
+
+Between those points the duration scales linearly. The cheapest intervals are then picked from Nordpool for that many hours.
+
+| Key | Example | Description |
+|-----|---------|-------------|
+| `nordpool_sensor` | `sensor.nordpool_new` | Your Nordpool sensor |
+| `shelly_switch` | `switch.shelly_floor_heating` | Floor heating switch |
+| `forecast_sensor` | `sensor.daily_forecast_avg_c` | Sensor whose state is today's average forecast temperature (°C) |
+
+##### Forecast average sensor (required)
+
+Modern HA weather entities don't expose the hourly forecast as an attribute, so create a **template sensor** that calls `weather.get_forecasts` and averages today's hourly temperatures.
+
+Replace `weather.forecast_koti` with your weather entity in **both** the `target: entity_id` and the `fc[...]` lookup — the response variable `fc` is keyed by the entity you target, so the two must match (a mismatch raises `UndefinedError: 'dict object' has no attribute ...`).
+
+```yaml
+template:
+  - triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        hours: /1
+    actions:
+      - action: weather.get_forecasts
+        data:
+          type: hourly
+        target:
+          entity_id: weather.forecast_koti     # <- your weather entity
+        response_variable: fc
+    sensor:
+      - name: Daily forecast avg C
+        unique_id: daily_forecast_avg_c
+        unit_of_measurement: "°C"
+        state: >
+          {% set ns = namespace(temps=[]) %}
+          {% set fcl = fc['weather.forecast_koti'].forecast %}   {# <- same entity #}
+          {% for e in fcl %}
+            {% if as_datetime(e.datetime).date() == now().date() %}
+              {% set ns.temps = ns.temps + [e.temperature | float] %}
+            {% endif %}
+          {% endfor %}
+          {% if ns.temps | count > 0 %}
+            {{ (ns.temps | sum / ns.temps | count) | round(2) }}
+          {% endif %}
+```
+
+This produces `sensor.daily_forecast_avg_c`. After saving, reload via **Developer Tools → Actions → `homeassistant.reload_all`** and verify it has a numeric value under **Developer Tools → States** before relying on floor heating.
 
 Find entity IDs under **Developer Tools → States**.
 
@@ -159,6 +224,13 @@ Pyscript **auto-reloads** when files under `/config/pyscript/` change (no manual
 | `pyscript.shelly_car_charging_show_plan` | Log cheapest intervals and night window |
 | `pyscript.shelly_car_charging_boost_start` | Turn switch on and start timed boost (`duration` optional) |
 | `pyscript.shelly_car_charging_boost_stop` | Cancel boost and re-evaluate switch from plan |
+
+### Floor heating
+
+| Service | Purpose |
+|---------|---------|
+| `pyscript.shelly_floor_heating_apply_now` | Evaluate plan and set switch now |
+| `pyscript.shelly_floor_heating_show_plan` | Log avg forecast temp, heated hours, and cheapest intervals |
 
 ## Manual boost (dashboard)
 
@@ -214,6 +286,8 @@ While boost is active, the switch stays **on** even outside cheap intervals / ni
 | Car charging | Every 15 minutes | Switch on/off based on cheapest hours, night window, or boost |
 | Car charging | Boost timer finishes | Re-evaluate switch immediately |
 | Car charging | 14:00 cron | Log plan after Nordpool refresh |
+| Floor heating | Every 15 minutes | Switch on/off based on weather-driven heated hours |
+| Floor heating | 06:00 and 14:00 cron | Recompute plan after forecast/Nordpool refresh |
 
 ## Optional: Jupyter live debugging
 

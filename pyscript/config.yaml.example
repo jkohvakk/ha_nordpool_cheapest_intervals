@@ -33,3 +33,10 @@ pyscript:
       night_end: 7
       boost_timer: timer.car_charging_boost
       boost_duration: "06:00:00"
+
+    shelly_floor_heating:
+      nordpool_sensor: sensor.nordpool_kwh_fi_eur_3_10_022
+      shelly_switch: switch.shelly_floor_heating
+      # Sensor whose state is today's average forecast temperature in Celsius.
+      # See README for the weather.get_forecasts template sensor that produces it.
+      forecast_sensor: sensor.daily_forecast_avg_c
