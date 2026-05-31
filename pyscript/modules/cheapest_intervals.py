@@ -13,7 +13,7 @@ billing interval (e.g. ``1.75`` -> 7 intervals, ``3.25`` -> 13 intervals).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Sequence
 
 INTERVALS_PER_HOUR = 4
@@ -55,6 +55,78 @@ def _parse_timestamp(value: Any) -> datetime:
     return value
 
 
+def _row_field(row: Any, key: str) -> Any:
+    """Read a Nordpool row field from a dict or attribute-style object."""
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key, None)
+
+
+def _normalize_price_row(row: Any) -> dict[str, Any] | None:
+    start = _row_field(row, "start")
+    value = _row_field(row, "value")
+    if start is None or value is None:
+        return None
+    return {
+        "start": start,
+        "end": _row_field(row, "end"),
+        "value": value,
+    }
+
+
+def today_list_to_raw_rows(today: Sequence[Any], day: date) -> list[dict[str, Any]]:
+    """Build ``raw_today``-shaped rows from Nordpool ``today`` (24 or 96 values)."""
+    if not today:
+        return []
+    count = len(today)
+    if count <= 0:
+        return []
+    minutes_per_slot = (24 * 60) // count
+    base = datetime(day.year, day.month, day.day)
+    rows: list[dict[str, Any]] = []
+    for index, value in enumerate(today):
+        if value is None or value == float("inf"):
+            continue
+        start = base + timedelta(minutes=index * minutes_per_slot)
+        end = start + timedelta(minutes=minutes_per_slot)
+        rows.append({"start": start, "end": end, "value": float(value)})
+    return rows
+
+
+def nordpool_price_rows(
+    attrs: dict[str, Any] | None,
+    day: date | None = None,
+) -> list[dict[str, Any]]:
+    """Price rows for today from Nordpool sensor attributes.
+
+    Prefer ``raw_today`` (timestamped). Fall back to ``today`` (value list) when
+    ``raw_today`` is missing, empty, or does not parse into slots.
+    """
+    if not attrs:
+        return []
+    day = day or date.today()
+    raw_today = attrs.get("raw_today")
+    if isinstance(raw_today, (list, tuple)) and raw_today:
+        rows = [row for item in raw_today if (row := _normalize_price_row(item))]
+        if rows and parse_raw_slots(rows):
+            return rows
+    today = attrs.get("today")
+    if isinstance(today, (list, tuple)) and today:
+        return today_list_to_raw_rows(today, day)
+    return []
+
+
+def nordpool_diagnostics(attrs: dict[str, Any] | None) -> str:
+    """Short summary of Nordpool attribute availability (for logs)."""
+    if not attrs:
+        return "attrs=empty"
+    raw = attrs.get("raw_today")
+    today = attrs.get("today")
+    raw_count = len(raw) if isinstance(raw, (list, tuple)) else 0
+    today_count = len(today) if isinstance(today, (list, tuple)) else 0
+    return f"raw_today={raw_count} today={today_count} keys={sorted(attrs.keys())}"
+
+
 def _slot_length_minutes(slot: PriceSlot) -> int:
     if slot.end is None:
         return 60
@@ -63,17 +135,18 @@ def _slot_length_minutes(slot: PriceSlot) -> int:
     return max(1, minutes)
 
 
-def parse_raw_slots(raw: Sequence[dict[str, Any]] | None) -> list[PriceSlot]:
-    """Convert Nordpool ``raw_today`` entries to ``PriceSlot`` list."""
+def parse_raw_slots(raw: Sequence[Any] | None) -> list[PriceSlot]:
+    """Convert Nordpool price rows to ``PriceSlot`` list."""
     if not raw:
         return []
     slots: list[PriceSlot] = []
     for row in raw:
-        start = row.get("start")
-        value = row.get("value")
-        if start is None or value is None:
+        normalized = _normalize_price_row(row)
+        if normalized is None:
             continue
-        end = row.get("end")
+        start = normalized["start"]
+        value = normalized["value"]
+        end = normalized.get("end")
         slots.append(
             PriceSlot(
                 start=_parse_timestamp(start),
@@ -140,6 +213,25 @@ def is_interval_among_cheapest(now: datetime, cheapest: set[IntervalKey]) -> boo
 def should_switch_on(in_cheapest: bool, boost_active: bool) -> bool:
     """True when boost override is on or the current interval is in today's plan."""
     return boost_active or in_cheapest
+
+
+def is_in_hour_window(now: datetime, start_hour: int, end_hour: int) -> bool:
+    """True when ``now`` is in ``[start_hour:00, end_hour:00)``, including overnight wrap."""
+    minute_of_day = now.hour * 60 + now.minute
+    start = start_hour * 60
+    end = end_hour * 60
+    if start < end:
+        return start <= minute_of_day < end
+    return minute_of_day >= start or minute_of_day < end
+
+
+def should_switch_on_car(
+    in_cheapest: bool,
+    in_night_window: bool,
+    boost_active: bool = False,
+) -> bool:
+    """True when boost, cheapest slot, or night window applies."""
+    return boost_active or in_cheapest or in_night_window
 
 
 def format_interval_plan(slots: Sequence[PriceSlot]) -> str:

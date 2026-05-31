@@ -1,6 +1,6 @@
-"""Pyscript app: turn Shelly switches on during the cheapest Nordpool 15-min intervals.
+"""Pyscript app: car charging on cheapest hours and/or a nightly window.
 
-Configure in ``configuration.yaml`` under ``pyscript.apps.shelly_cheap_intervals``.
+Configure in ``configuration.yaml`` under ``pyscript.apps.shelly_car_charging``.
 Reload is automatic when this file changes.
 """
 
@@ -13,14 +13,17 @@ from cheapest_intervals import (
     format_interval_key,
     format_interval_plan,
     interval_start_key,
+    is_in_hour_window,
     is_interval_among_cheapest,
     nordpool_diagnostics,
     nordpool_price_rows,
-    should_switch_on,
+    should_switch_on_car,
 )
 
-_DEFAULT_BOOST_TIMER = "timer.water_heating_boost"
+_DEFAULT_BOOST_TIMER = "timer.car_charging_boost"
 _DEFAULT_BOOST_DURATION = "06:00:00"
+_DEFAULT_NIGHT_START = 22
+_DEFAULT_NIGHT_END = 7
 
 
 def _cfg():
@@ -46,7 +49,15 @@ def _price_rows():
 
 
 def _cheap_hours() -> float:
-    return float(_cfg().get("cheap_hours", 3))
+    return float(_cfg().get("cheap_hours", 7))
+
+
+def _night_start() -> int:
+    return int(_cfg().get("night_start", _DEFAULT_NIGHT_START))
+
+
+def _night_end() -> int:
+    return int(_cfg().get("night_end", _DEFAULT_NIGHT_END))
 
 
 def _boost_timer_entity() -> str | None:
@@ -90,92 +101,109 @@ def _evaluate_and_apply_switch() -> None:
     now = datetime.now()
     cheapest = _cheapest_interval_keys_today()
     in_cheapest = is_interval_among_cheapest(now, cheapest)
+    in_night = is_in_hour_window(now, _night_start(), _night_end())
     boost_active = _boost_active()
-    on = should_switch_on(in_cheapest, boost_active)
+    on = should_switch_on_car(in_cheapest, in_night, boost_active)
+    if len(cheapest) == 0 and _cheap_hours() > 0:
+        attrs = _nordpool_attrs()
+        log.warning(
+            f"shelly_car_charging: no price rows parsed "
+            f"(sensor={_nordpool_sensor_entity()!r}, "
+            f"{nordpool_diagnostics(attrs)}, "
+            f"price_rows={len(_price_rows())})"
+        )
     log.warning(
-        f"shelly_cheap_intervals: now={format_interval_key(interval_start_key(now))} "
-        f"in_cheapest={in_cheapest} boost_active={boost_active} switch_on={on} "
-        f"(plan has {len(cheapest)} intervals)"
+        f"shelly_car_charging: now={format_interval_key(interval_start_key(now))} "
+        f"in_cheapest={in_cheapest} in_night={in_night} boost_active={boost_active} "
+        f"switch_on={on} (plan has {len(cheapest)} cheapest intervals, "
+        f"night={_night_start():02d}:00-{_night_end():02d}:00)"
     )
     _apply_switch(on)
 
 
 @time_trigger("startup")
-def shelly_cheap_intervals_startup():
+def shelly_car_charging_startup():
     cheap_hours = _cheap_hours()
     intervals = cheap_hours_to_interval_count(cheap_hours)
     log.warning(
-        f"shelly_cheap_intervals: app loaded, cheap_hours={cheap_hours} "
-        f"({intervals} x 15 min), config={_cfg()}"
+        f"shelly_car_charging: app loaded, cheap_hours={cheap_hours} "
+        f"({intervals} x 15 min), night={_night_start():02d}:00-{_night_end():02d}:00, "
+        f"config={_cfg()}"
     )
 
 
 @time_trigger("cron(0,15,30,45 * * * *)")
-def shelly_cheap_intervals_tick():
+def shelly_car_charging_tick():
     """At each 15-minute boundary, set switch according to plan or boost."""
     _evaluate_and_apply_switch()
 
 
 @time_trigger("cron(0 14 * * *)")
-def shelly_cheap_intervals_daily_plan_log():
+def shelly_car_charging_daily_plan_log():
     """Log today's plan after Nordpool refresh (~14:00 Finnish time)."""
     slots = _cheapest_interval_slots_today()
     log.warning(
-        f"shelly_cheap_intervals: {len(slots)} cheapest 15-min intervals today:\n"
+        f"shelly_car_charging: {len(slots)} cheapest 15-min intervals today "
+        f"(cheap_hours={_cheap_hours()}), night={_night_start():02d}:00-{_night_end():02d}:00:\n"
         f"{format_interval_plan(slots)}"
     )
 
 
-# Entity id must match ``boost_timer`` in app config (default: timer.water_heating_boost).
+# Entity id must match ``boost_timer`` in app config (default: timer.car_charging_boost).
 @state_trigger(f"{_DEFAULT_BOOST_TIMER} == 'idle'")
-def shelly_cheap_intervals_boost_ended(old_value=None):
+def shelly_car_charging_boost_ended(old_value=None):
     """Re-evaluate switch when timed boost finishes."""
     if old_value != "active":
         return
-    log.warning("shelly_cheap_intervals: boost ended, re-evaluating switch")
+    log.warning("shelly_car_charging: boost ended, re-evaluating switch")
     _evaluate_and_apply_switch()
 
 
 @service
-def shelly_cheap_intervals_apply_now():
-    """Force evaluation now (Developer Tools -> pyscript.shelly_cheap_intervals_apply_now)."""
+def shelly_car_charging_apply_now():
+    """Force evaluation now (Developer Tools -> pyscript.shelly_car_charging_apply_now)."""
     _evaluate_and_apply_switch()
 
 
 @service
-def shelly_cheap_intervals_show_cheapest():
-    """Log today's cheapest 15-minute intervals with prices (Developer Tools)."""
+def shelly_car_charging_show_plan():
+    """Log today's cheapest intervals and night window (Developer Tools)."""
     attrs = _nordpool_attrs()
     rows = _price_rows()
     slots = _cheapest_interval_slots_today()
     log.warning(
-        f"shelly_cheap_intervals: {len(slots)} cheapest 15-min intervals today "
-        f"(cheap_hours={_cheap_hours()}), sensor={_nordpool_sensor_entity()!r}, "
-        f"price_rows={len(rows)}, {nordpool_diagnostics(attrs)}:\n"
-        f"{format_interval_plan(slots)}"
+        f"shelly_car_charging: {len(slots)} cheapest 15-min intervals today "
+        f"(cheap_hours={_cheap_hours()}), night={_night_start():02d}:00-{_night_end():02d}:00, "
+        f"sensor={_nordpool_sensor_entity()!r}, price_rows={len(rows)}, "
+        f"{nordpool_diagnostics(attrs)}:\n{format_interval_plan(slots)}"
     )
+    if not _nordpool_sensor_entity():
+        log.error(
+            "shelly_car_charging: nordpool_sensor missing in app config — "
+            "set the same entity as shelly_cheap_intervals"
+        )
 
 
 @service
-def shelly_cheap_intervals_boost_start(duration=None):
-    """Start timed heating boost (switch on until timer expires)."""
+def shelly_car_charging_boost_start(duration=None):
+    """Start timed charging boost (switch on until timer expires)."""
     timer_entity = _boost_timer_entity()
     if not timer_entity:
-        log.error("shelly_cheap_intervals: boost_timer not configured")
+        log.error("shelly_car_charging: boost_timer not configured")
         return
     duration = duration or _boost_duration()
     switch.turn_on(entity_id=_cfg()["shelly_switch"])
     timer.start(entity_id=timer_entity, duration=duration)
-    log.warning(f"shelly_cheap_intervals: boost started for {duration}")
+    log.warning(f"shelly_car_charging: boost started for {duration}")
 
 
 @service
-def shelly_cheap_intervals_boost_stop():
-    """Cancel heating boost and re-evaluate switch from Nordpool plan."""
+def shelly_car_charging_boost_stop():
+    """Cancel charging boost and re-evaluate switch from plan."""
     timer_entity = _boost_timer_entity()
     if not timer_entity:
-        log.error("shelly_cheap_intervals: boost_timer not configured")
+        log.error("shelly_car_charging: boost_timer not configured")
         return
     timer.cancel(entity_id=timer_entity)
-    log.warning("shelly_cheap_intervals: boost cancelled")
+    log.warning("shelly_car_charging: boost cancelled")
     _evaluate_and_apply_switch()

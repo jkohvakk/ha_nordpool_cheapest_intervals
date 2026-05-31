@@ -11,9 +11,13 @@ from cheapest_intervals import (
     format_interval_key,
     format_interval_plan,
     interval_start_key,
+    is_in_hour_window,
     is_interval_among_cheapest,
+    nordpool_price_rows,
     parse_raw_slots,
     should_switch_on,
+    should_switch_on_car,
+    today_list_to_raw_rows,
 )
 
 
@@ -112,6 +116,66 @@ def test_should_switch_on():
     assert should_switch_on(in_cheapest=True, boost_active=False) is True
     assert should_switch_on(in_cheapest=False, boost_active=True) is True
     assert should_switch_on(in_cheapest=True, boost_active=True) is True
+
+
+def test_is_in_hour_window_overnight():
+    assert not is_in_hour_window(datetime(2026, 5, 24, 21, 45), 22, 7)
+    assert is_in_hour_window(datetime(2026, 5, 24, 22, 0), 22, 7)
+    assert is_in_hour_window(datetime(2026, 5, 24, 23, 30), 22, 7)
+    assert is_in_hour_window(datetime(2026, 5, 25, 0, 0), 22, 7)
+    assert is_in_hour_window(datetime(2026, 5, 25, 6, 45), 22, 7)
+    assert not is_in_hour_window(datetime(2026, 5, 25, 7, 0), 22, 7)
+    assert not is_in_hour_window(datetime(2026, 5, 25, 12, 0), 22, 7)
+
+
+def test_is_in_hour_window_same_day():
+    assert is_in_hour_window(datetime(2026, 5, 24, 9, 0), 8, 17)
+    assert not is_in_hour_window(datetime(2026, 5, 24, 7, 59), 8, 17)
+    assert not is_in_hour_window(datetime(2026, 5, 24, 17, 0), 8, 17)
+
+
+def test_should_switch_on_car():
+    assert should_switch_on_car(False, False, False) is False
+    assert should_switch_on_car(True, False, False) is True
+    assert should_switch_on_car(False, True, False) is True
+    assert should_switch_on_car(False, False, True) is True
+
+
+def test_nordpool_price_rows_prefers_raw_today():
+    day = date(2026, 5, 24)
+    attrs = {
+        "raw_today": [_raw_quarter(2, 0, 0.01, day)],
+        "today": [9.99],
+    }
+    rows = nordpool_price_rows(attrs, day)
+    assert len(rows) == 1
+    assert rows[0]["value"] == 0.01
+
+
+def test_nordpool_price_rows_falls_back_to_today_list():
+    day = date(2026, 5, 24)
+    attrs = {"today": [0.50, 0.40, 0.30, 0.20] + [1.0] * 20}
+    rows = nordpool_price_rows(attrs, day)
+    assert len(rows) == 24
+    assert rows[1]["value"] == 0.40
+
+
+def test_nordpool_price_rows_falls_back_when_raw_today_unparseable():
+    day = date(2026, 5, 24)
+    attrs = {
+        "raw_today": [{"start": "bad", "value": None}],
+        "today": [0.50, 0.40] + [1.0] * 22,
+    }
+    rows = nordpool_price_rows(attrs, day)
+    assert len(rows) == 24
+
+
+def test_build_cheapest_intervals_from_today_list_fallback():
+    day = date(2026, 5, 24)
+    today = [float(h) for h in range(24)]
+    rows = today_list_to_raw_rows(today, day)
+    cheapest = build_cheapest_intervals(rows, cheap_hours=7)
+    assert len(cheapest) == 28
 
 
 def test_format_interval_plan():
