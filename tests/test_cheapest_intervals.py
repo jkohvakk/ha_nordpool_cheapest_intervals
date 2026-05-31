@@ -13,6 +13,7 @@ from cheapest_intervals import (
     interval_start_key,
     is_interval_among_cheapest,
     parse_raw_slots,
+    should_switch_on,
 )
 
 
@@ -104,6 +105,13 @@ def test_build_cheapest_intervals_from_raw_today():
         interval_start_key(datetime(2026, 5, 24, 2, 0)),
         interval_start_key(datetime(2026, 5, 24, 2, 15)),
     }
+
+
+def test_should_switch_on():
+    assert should_switch_on(in_cheapest=False, boost_active=False) is False
+    assert should_switch_on(in_cheapest=True, boost_active=False) is True
+    assert should_switch_on(in_cheapest=False, boost_active=True) is True
+    assert should_switch_on(in_cheapest=True, boost_active=True) is True
 
 
 def test_format_interval_plan():

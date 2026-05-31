@@ -137,6 +137,11 @@ def is_interval_among_cheapest(now: datetime, cheapest: set[IntervalKey]) -> boo
     return interval_start_key(now) in cheapest
 
 
+def should_switch_on(in_cheapest: bool, boost_active: bool) -> bool:
+    """True when boost override is on or the current interval is in today's plan."""
+    return boost_active or in_cheapest
+
+
 def format_interval_plan(slots: Sequence[PriceSlot]) -> str:
     """Multi-line plan: each 15-minute interval with price."""
     if not slots:

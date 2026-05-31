@@ -14,7 +14,11 @@ from cheapest_intervals import (
     format_interval_plan,
     interval_start_key,
     is_interval_among_cheapest,
+    should_switch_on,
 )
+
+_DEFAULT_BOOST_TIMER = "timer.water_heating_boost"
+_DEFAULT_BOOST_DURATION = "06:00:00"
 
 
 def _cfg():
@@ -27,6 +31,21 @@ def _nordpool_attrs():
 
 def _cheap_hours() -> float:
     return float(_cfg().get("cheap_hours", 3))
+
+
+def _boost_timer_entity() -> str | None:
+    return _cfg().get("boost_timer")
+
+
+def _boost_duration() -> str:
+    return _cfg().get("boost_duration", _DEFAULT_BOOST_DURATION)
+
+
+def _boost_active() -> bool:
+    timer_entity = _boost_timer_entity()
+    if not timer_entity:
+        return False
+    return state.get(timer_entity) == "active"
 
 
 def _raw_today():
@@ -49,6 +68,20 @@ def _apply_switch(should_on: bool) -> None:
         switch.turn_off(entity_id=entity)
 
 
+def _evaluate_and_apply_switch() -> None:
+    now = datetime.now()
+    cheapest = _cheapest_interval_keys_today()
+    in_cheapest = is_interval_among_cheapest(now, cheapest)
+    boost_active = _boost_active()
+    on = should_switch_on(in_cheapest, boost_active)
+    log.warning(
+        f"shelly_cheap_intervals: now={format_interval_key(interval_start_key(now))} "
+        f"in_cheapest={in_cheapest} boost_active={boost_active} switch_on={on} "
+        f"(plan has {len(cheapest)} intervals)"
+    )
+    _apply_switch(on)
+
+
 @time_trigger("startup")
 def shelly_cheap_intervals_startup():
     cheap_hours = _cheap_hours()
@@ -61,15 +94,8 @@ def shelly_cheap_intervals_startup():
 
 @time_trigger("cron(0,15,30,45 * * * *)")
 def shelly_cheap_intervals_tick():
-    """At each 15-minute boundary, set switch according to cheapest-interval plan."""
-    now = datetime.now()
-    cheapest = _cheapest_interval_keys_today()
-    on = is_interval_among_cheapest(now, cheapest)
-    log.warning(
-        f"shelly_cheap_intervals: now={format_interval_key(interval_start_key(now))} "
-        f"in_cheapest={on} (plan has {len(cheapest)} intervals)"
-    )
-    _apply_switch(on)
+    """At each 15-minute boundary, set switch according to plan or boost."""
+    _evaluate_and_apply_switch()
 
 
 @time_trigger("cron(0 14 * * *)")
@@ -82,10 +108,20 @@ def shelly_cheap_intervals_daily_plan_log():
     )
 
 
+# Entity id must match ``boost_timer`` in app config (default: timer.water_heating_boost).
+@state_trigger(f"{_DEFAULT_BOOST_TIMER} == 'idle'")
+def shelly_cheap_intervals_boost_ended(old_value=None):
+    """Re-evaluate switch when timed boost finishes."""
+    if old_value != "active":
+        return
+    log.warning("shelly_cheap_intervals: boost ended, re-evaluating switch")
+    _evaluate_and_apply_switch()
+
+
 @service
 def shelly_cheap_intervals_apply_now():
     """Force evaluation now (Developer Tools -> pyscript.shelly_cheap_intervals_apply_now)."""
-    shelly_cheap_intervals_tick()
+    _evaluate_and_apply_switch()
 
 
 @service
@@ -96,3 +132,28 @@ def shelly_cheap_intervals_show_cheapest():
         f"shelly_cheap_intervals: {len(slots)} cheapest 15-min intervals today "
         f"(cheap_hours={_cheap_hours()}):\n{format_interval_plan(slots)}"
     )
+
+
+@service
+def shelly_cheap_intervals_boost_start(duration=None):
+    """Start timed heating boost (switch on until timer expires)."""
+    timer_entity = _boost_timer_entity()
+    if not timer_entity:
+        log.error("shelly_cheap_intervals: boost_timer not configured")
+        return
+    duration = duration or _boost_duration()
+    switch.turn_on(entity_id=_cfg()["shelly_switch"])
+    timer.start(entity_id=timer_entity, duration=duration)
+    log.warning(f"shelly_cheap_intervals: boost started for {duration}")
+
+
+@service
+def shelly_cheap_intervals_boost_stop():
+    """Cancel heating boost and re-evaluate switch from Nordpool plan."""
+    timer_entity = _boost_timer_entity()
+    if not timer_entity:
+        log.error("shelly_cheap_intervals: boost_timer not configured")
+        return
+    timer.cancel(entity_id=timer_entity)
+    log.warning("shelly_cheap_intervals: boost cancelled")
+    _evaluate_and_apply_switch()

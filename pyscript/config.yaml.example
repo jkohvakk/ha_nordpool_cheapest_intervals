@@ -10,3 +10,6 @@ pyscript:
       shelly_switch: switch.shelly_outdoor_plug
       # Decimal hours; each 0.25 = one 15-minute interval (1.75 = 7 intervals)
       cheap_hours: 3.25
+      # Optional timed manual boost (requires timer: helper in configuration.yaml)
+      boost_timer: timer.water_heating_boost
+      boost_duration: "06:00:00"   # default for boost_start when duration omitted
